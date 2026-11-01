@@ -237,15 +237,19 @@ jobs:
                   } catch (Exception ignored) { }
                   fetcher.loadUrl(cur[1], hdr);
                   timeout = () -> finishFetch(0, "");
-                  handler.postDelayed(timeout, 25000);
+                  handler.postDelayed(timeout, 15000);
               }
 
               private void finishFetch(int status, String body) {
                   if (cur == null) return;
                   handler.removeCallbacks(timeout);
-                  String id = cur[0];
+                  final String[] c = cur;
                   cur = null;
-                  deliver(id, status, body);
+                  if (status == 0) {
+                      new Thread(() -> httpFetch(c[0], c[1], c[2])).start();
+                  } else {
+                      deliver(c[0], status, body);
+                  }
                   pumpFetch();
               }
 
@@ -287,6 +291,39 @@ jobs:
                   super.onDestroy();
               }
 
+              /** درخواست مستقیم HTTP (برای RedGifs و حالت پشتیبان ردیت) */
+              private void httpFetch(final String id, final String url, final String headersJson) {
+                  int status = 0;
+                  String body = "";
+                  try {
+                      HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+                      c.setConnectTimeout(15000);
+                      c.setReadTimeout(25000);
+                      c.setRequestProperty("User-Agent", UA);
+                      JSONObject h = new JSONObject(headersJson);
+                      Iterator<String> it = h.keys();
+                      while (it.hasNext()) {
+                          String k = it.next();
+                          c.setRequestProperty(k, h.getString(k));
+                      }
+                      status = c.getResponseCode();
+                      InputStream in = status >= 400 ? c.getErrorStream() : c.getInputStream();
+                      ByteArrayOutputStream out = new ByteArrayOutputStream();
+                      if (in != null) {
+                          byte[] buf = new byte[8192];
+                          int n;
+                          while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                          in.close();
+                      }
+                      body = new String(out.toByteArray(), StandardCharsets.UTF_8);
+                  } catch (Exception e) {
+                      status = 0;
+                  }
+                  final int st = status;
+                  final String b = body;
+                  runOnUiThread(() -> deliver(id, st, b));
+              }
+
               /** پل جاوااسکریپت ↔ اندروید: درخواست شبکه بدون محدودیت CORS و دانلود فایل */
               class Bridge {
 
@@ -299,37 +336,7 @@ jobs:
                           });
                           return;
                       }
-                      new Thread(() -> {
-                          int status = 0;
-                          String body = "";
-                          try {
-                              HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-                              c.setConnectTimeout(15000);
-                              c.setReadTimeout(25000);
-                              c.setRequestProperty("User-Agent", UA);
-                              JSONObject h = new JSONObject(headersJson);
-                              Iterator<String> it = h.keys();
-                              while (it.hasNext()) {
-                                  String k = it.next();
-                                  c.setRequestProperty(k, h.getString(k));
-                              }
-                              status = c.getResponseCode();
-                              InputStream in = status >= 400 ? c.getErrorStream() : c.getInputStream();
-                              ByteArrayOutputStream out = new ByteArrayOutputStream();
-                              if (in != null) {
-                                  byte[] buf = new byte[8192];
-                                  int n;
-                                  while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
-                                  in.close();
-                              }
-                              body = new String(out.toByteArray(), StandardCharsets.UTF_8);
-                          } catch (Exception e) {
-                              status = 0;
-                          }
-                          final int st = status;
-                          final String b = body;
-                          runOnUiThread(() -> deliver(id, st, b));
-                      }).start();
+                      new Thread(() -> httpFetch(id, url, headersJson)).start();
                   }
 
                   @JavascriptInterface
@@ -383,7 +390,7 @@ jobs:
           #panel .row{background:#1b1b1b;border-radius:12px;padding:12px;display:flex;justify-content:space-between;align-items:center;gap:8px;direction:ltr}
           #panel .row span{flex:1;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
           #panel .row button{background:#333;border:0;color:#fff;border-radius:8px;padding:6px 10px}
-          #msg{position:fixed;top:50%;right:0;left:0;text-align:center;z-index:5;padding:20px;pointer-events:none;opacity:.85}
+          #msg{white-space:pre-line;position:fixed;top:50%;right:0;left:0;text-align:center;z-index:5;padding:20px;pointer-events:none;opacity:.85}
           #toast{position:fixed;bottom:30px;right:50%;transform:translateX(50%);background:#222;padding:10px 16px;border-radius:20px;font-size:13px;z-index:30;display:none}
           .tap{position:absolute;font-size:64px;opacity:0;pointer-events:none;transition:opacity .3s}
           .tap.show{opacity:.8}
@@ -447,11 +454,15 @@ jobs:
               const sub=state.sub.trim().replace(/^\/?r\//i,'')||'videos';
               const q='limit=50&raw_json=1'+(state.sort==='top'?'&t=week':'')+(state.after?`&after=${state.after}`:'');
               const path=`/r/${encodeURIComponent(sub).replace(/%2B/g,'+')}/${state.sort}`;
-              let r=null,st=0;
+              let r=null,st=0;const tried=[];
               for(const [b,ext] of [['https://www.reddit.com','.json'],['https://old.reddit.com','.json'],['https://api.reddit.com','']]){
-                try{r=await nfetch(b+path+ext+'?'+q,{headers:{'Accept':'application/json'}});st=r.status;if(r.ok)break}catch{st=0}
+                const host=b.replace('https://','');
+                setMsg('اتصال به '+host+'…'+(tried.length?'\n('+tried.join(' ، ')+')':''));
+                try{r=await nfetch(b+path+ext+'?'+q,{headers:{'Accept':'application/json'}});st=r.status}catch(e){st=0}
+                tried.push(host+': '+st);
+                if(r&&r.ok)break;
               }
-              if(!r||!r.ok)throw new Error('HTTP '+st+' (همه آدرس‌های ردیت رد شدند؛ VPN را روشن/عوض کنید)');
+              if(!r||!r.ok)throw new Error(tried.join(' ، ')+' — اگر 0 است اینترنت/VPN وصل نیست؛ اگر 403 است ردیت مسدود کرده');
               const j=await r.json();
               const posts=j.data.children.map(c=>c.data);
               state.after=j.data.after;
