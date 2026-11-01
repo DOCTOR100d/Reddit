@@ -1,0 +1,595 @@
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate project files
+        run: |
+          mkdir -p app/src/main/java/app/reelsfeed app/src/main/assets app/src/main/res/drawable
+          cat > settings.gradle <<'EOF_0_END'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = 'ReelsFeed'
+          include ':app'
+          EOF_0_END
+          cat > build.gradle <<'EOF_1_END'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+          }
+          EOF_1_END
+          cat > gradle.properties <<'EOF_2_END'
+          org.gradle.jvmargs=-Xmx2g
+          android.nonTransitiveRClass=true
+          EOF_2_END
+          cat > app/build.gradle <<'EOF_3_END'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'app.reelsfeed'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId 'app.reelsfeed'
+                  minSdk 29
+                  targetSdk 34
+                  versionCode 1
+                  versionName '1.0'
+              }
+
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+          EOF_3_END
+          cat > app/src/main/AndroidManifest.xml <<'EOF_4_END'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.INTERNET" />
+
+              <application
+                  android:allowBackup="true"
+                  android:icon="@drawable/ic_launcher"
+                  android:label="Reels Feed"
+                  android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
+                  android:usesCleartextTraffic="true">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF_4_END
+          cat > app/src/main/java/app/reelsfeed/MainActivity.java <<'EOF_5_END'
+          package app.reelsfeed;
+
+          import android.app.Activity;
+          import android.app.DownloadManager;
+          import android.content.Intent;
+          import android.graphics.Color;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.os.Environment;
+          import android.util.Base64;
+          import android.view.View;
+          import android.view.WindowManager;
+          import android.webkit.JavascriptInterface;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebResourceRequest;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+
+          import org.json.JSONObject;
+
+          import java.io.ByteArrayOutputStream;
+          import java.io.InputStream;
+          import java.net.HttpURLConnection;
+          import java.net.URL;
+          import java.util.Iterator;
+
+          public class MainActivity extends Activity {
+
+              static final String UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
+                      + "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
+
+              private WebView web;
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
+                  web = new WebView(this);
+                  web.setBackgroundColor(Color.BLACK);
+                  setContentView(web);
+
+                  WebSettings s = web.getSettings();
+                  s.setJavaScriptEnabled(true);
+                  s.setDomStorageEnabled(true);
+                  s.setMediaPlaybackRequiresUserGesture(false);
+                  s.setAllowFileAccess(true);
+                  s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+
+                  web.setWebChromeClient(new WebChromeClient());
+                  web.setWebViewClient(new WebViewClient() {
+                      @Override
+                      public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
+                          Uri u = req.getUrl();
+                          if ("file".equals(u.getScheme())) return false;
+                          try {
+                              startActivity(new Intent(Intent.ACTION_VIEW, u));
+                          } catch (Exception ignored) { }
+                          return true;
+                      }
+                  });
+                  web.addJavascriptInterface(new Bridge(), "Native");
+                  web.loadUrl("file:///android_asset/index.html");
+              }
+
+              @Override
+              protected void onWindowFocusChanged(boolean hasFocus) {
+                  super.onWindowFocusChanged(hasFocus);
+                  if (hasFocus) {
+                      getWindow().getDecorView().setSystemUiVisibility(
+                              View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                                      | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                      | View.SYSTEM_UI_FLAG_FULLSCREEN
+                                      | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                                      | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                                      | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
+                  }
+              }
+
+              @Override
+              protected void onPause() {
+                  super.onPause();
+                  web.onPause();
+              }
+
+              @Override
+              protected void onResume() {
+                  super.onResume();
+                  web.onResume();
+              }
+
+              @Override
+              protected void onDestroy() {
+                  web.destroy();
+                  super.onDestroy();
+              }
+
+              /** پل جاوااسکریپت ↔ اندروید: درخواست شبکه بدون محدودیت CORS و دانلود فایل */
+              class Bridge {
+
+                  @JavascriptInterface
+                  public void fetch(final String id, final String url, final String headersJson) {
+                      new Thread(() -> {
+                          int status = 0;
+                          String b64 = "";
+                          try {
+                              HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+                              c.setConnectTimeout(15000);
+                              c.setReadTimeout(25000);
+                              c.setRequestProperty("User-Agent", UA);
+                              JSONObject h = new JSONObject(headersJson);
+                              Iterator<String> it = h.keys();
+                              while (it.hasNext()) {
+                                  String k = it.next();
+                                  c.setRequestProperty(k, h.getString(k));
+                              }
+                              status = c.getResponseCode();
+                              InputStream in = status >= 400 ? c.getErrorStream() : c.getInputStream();
+                              ByteArrayOutputStream out = new ByteArrayOutputStream();
+                              if (in != null) {
+                                  byte[] buf = new byte[8192];
+                                  int n;
+                                  while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                                  in.close();
+                              }
+                              b64 = Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP);
+                          } catch (Exception e) {
+                              status = 0;
+                          }
+                          final int st = status;
+                          final String body = b64;
+                          runOnUiThread(() -> web.evaluateJavascript(
+                                  "window.__nativeResp('" + id + "'," + st + ",'" + body + "')", null));
+                      }).start();
+                  }
+
+                  @JavascriptInterface
+                  public void download(String url, String name) {
+                      try {
+                          DownloadManager.Request r = new DownloadManager.Request(Uri.parse(url));
+                          r.addRequestHeader("User-Agent", UA);
+                          r.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                          r.setDestinationInExternalPublicDir(Environment.DIRECTORY_MOVIES, "ReelsFeed/" + name);
+                          ((DownloadManager) getSystemService(DOWNLOAD_SERVICE)).enqueue(r);
+                      } catch (Exception ignored) { }
+                  }
+              }
+          }
+          EOF_5_END
+          cat > app/src/main/assets/index.html <<'EOF_6_END'
+          <!doctype html>
+          <html lang="fa" dir="rtl">
+          <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+          <meta name="theme-color" content="#000000">
+          <meta name="mobile-web-app-capable" content="yes">
+          <title>ریلز ردیت</title>
+          <link rel="manifest" href='data:application/json,{"name":"Reddit Reels","short_name":"Reels","display":"standalone","start_url":".","background_color":"#000000","theme_color":"#000000","icons":[{"src":"data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 rx=%2722%27 fill=%27%23ff4500%27/%3E%3Cpath d=%27M38 28v44l36-22z%27 fill=%27white%27/%3E%3C/svg%3E","sizes":"any","type":"image/svg+xml"}]}'>
+          <style>
+          *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+          html,body{margin:0;height:100%;background:#000;color:#fff;font-family:system-ui,-apple-system,"Segoe UI",Tahoma,sans-serif;overflow:hidden}
+          #feed{height:100dvh;overflow-y:scroll;scroll-snap-type:y mandatory;scrollbar-width:none;overscroll-behavior:contain}
+          #feed::-webkit-scrollbar{display:none}
+          .slide{position:relative;height:100dvh;scroll-snap-align:start;scroll-snap-stop:always;background:#000;display:flex;align-items:center;justify-content:center}
+          .slide video{width:100%;height:100%;object-fit:contain;background:#000}
+          .slide .spin{position:absolute;width:36px;height:36px;border:3px solid #fff4;border-top-color:#fff;border-radius:50%;animation:s 1s linear infinite;pointer-events:none}
+          .slide.ready .spin{display:none}
+          @keyframes s{to{transform:rotate(360deg)}}
+          .info{position:absolute;right:0;left:64px;bottom:0;padding:16px 14px calc(18px + env(safe-area-inset-bottom));background:linear-gradient(transparent,#000a);direction:ltr;text-align:left;pointer-events:none}
+          .info b{display:block;font-size:14px;margin-bottom:4px}
+          .info span{font-size:12px;opacity:.8}
+          .side{position:absolute;left:8px;bottom:calc(90px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:14px;align-items:center}
+          .btn{width:46px;height:46px;border-radius:50%;border:0;background:#0006;color:#fff;font-size:20px;backdrop-filter:blur(6px);display:flex;align-items:center;justify-content:center;cursor:pointer}
+          .btn.on{background:#ff4500}
+          .btn small{font-size:10px}
+          .bar{position:fixed;top:0;right:0;left:0;z-index:10;display:flex;gap:6px;padding:calc(8px + env(safe-area-inset-top)) 8px 8px;background:linear-gradient(#000c,transparent);transition:transform .25s}
+          .bar.hide{transform:translateY(-110%)}
+          .bar input,.bar select{background:#222c;border:1px solid #444;color:#fff;border-radius:18px;padding:8px 12px;font-size:14px;min-width:0}
+          .bar input{flex:1;direction:ltr}
+          .bar button{background:#ff4500;border:0;color:#fff;border-radius:18px;padding:8px 14px;font-size:14px}
+          .bar .ic{background:#222c;border:1px solid #444;padding:8px 11px}
+          #panel{position:fixed;inset:0;z-index:20;background:#000e;display:none;flex-direction:column;padding:16px;gap:10px;overflow:auto}
+          #panel.open{display:flex}
+          #panel .row{background:#1b1b1b;border-radius:12px;padding:12px;display:flex;justify-content:space-between;align-items:center;gap:8px;direction:ltr}
+          #panel .row span{flex:1;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+          #panel .row button{background:#333;border:0;color:#fff;border-radius:8px;padding:6px 10px}
+          #msg{position:fixed;top:50%;right:0;left:0;text-align:center;z-index:5;padding:20px;pointer-events:none;opacity:.85}
+          #toast{position:fixed;bottom:30px;right:50%;transform:translateX(50%);background:#222;padding:10px 16px;border-radius:20px;font-size:13px;z-index:30;display:none}
+          .tap{position:absolute;font-size:64px;opacity:0;pointer-events:none;transition:opacity .3s}
+          .tap.show{opacity:.8}
+          </style>
+          </head>
+          <body>
+          <div class="bar" id="bar">
+            <button class="ic" id="bPanel">☰</button>
+            <input id="sub" placeholder="ساب‌ردیت (مثلاً funny یا a+b)" value="" autocapitalize="none" autocomplete="off" list="subs">
+            <datalist id="subs"></datalist>
+            <select id="sort"><option>hot</option><option>new</option><option>top</option><option>rising</option></select>
+            <button id="go">برو</button>
+          </div>
+          <div id="feed"></div>
+          <div id="msg"></div>
+          <div id="panel">
+            <div style="display:flex;gap:8px;justify-content:space-between;align-items:center">
+              <b>تنظیمات و بوکمارک‌ها</b><button class="btn" id="closeP">✕</button>
+            </div>
+            <label class="row" style="direction:rtl"><span>نمایش محتوای NSFW (فقط ۱۸+)</span><input type="checkbox" id="nsfw"></label>
+            <label class="row" style="direction:rtl"><span>کیفیت</span>
+              <select id="quality"><option value="auto">خودکار (بالاترین)</option><option value="720">720</option><option value="480">480</option><option value="360">360 (کم‌حجم)</option></select></label>
+            <b>بوکمارک‌ها</b>
+            <div id="bms"></div>
+          </div>
+          <div id="toast"></div>
+
+          <script>
+          const $=s=>document.querySelector(s);
+          const feed=$('#feed'),msg=$('#msg');
+          const store={get(k,d){try{return JSON.parse(localStorage.getItem(k))??d}catch{return d}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch{}}};
+          let state={sub:store.get('sub','videos'),sort:store.get('sort','hot'),after:null,loading:false,seen:new Set(),muted:true,
+            nsfw:store.get('nsfw',false),quality:store.get('quality','auto'),bms:store.get('bms',[])};
+          let items=[],active=-1,rgToken=null,rgTokenAt=0;
+
+          /* ---------- پل شبکه اندروید (بدون CORS) ---------- */
+          const pend={};
+          window.__nativeResp=(id,status,b64)=>{
+            const f=pend[id];if(!f)return;delete pend[id];
+            let txt='';try{txt=new TextDecoder().decode(Uint8Array.from(atob(b64),c=>c.charCodeAt(0)))}catch{}
+            f({ok:status>=200&&status<300,status,json:async()=>JSON.parse(txt),text:async()=>txt});
+          };
+          function nfetch(url,opts={}){
+            if(typeof Native==='undefined')return fetch(url,opts);
+            return new Promise(res=>{
+              const id=Math.random().toString(36).slice(2);pend[id]=res;
+              Native.fetch(id,url,JSON.stringify(opts.headers||{}));
+            });
+          }
+
+
+          function toast(t){const e=$('#toast');e.textContent=t;e.style.display='block';clearTimeout(toast.t);toast.t=setTimeout(()=>e.style.display='none',2200)}
+          function setMsg(t){msg.textContent=t||''}
+
+          /* ---------- Reddit ---------- */
+          async function loadMore(reset){
+            if(state.loading)return;state.loading=true;
+            if(reset){feed.innerHTML='';items=[];state.after=null;state.seen.clear();active=-1;}
+            setMsg('در حال بارگذاری…');
+            try{
+              const sub=state.sub.trim().replace(/^\/?r\//i,'')||'videos';
+              let url=`https://www.reddit.com/r/${encodeURIComponent(sub).replace(/%2B/g,'+')}/${state.sort}.json?limit=50&raw_json=1`+(state.sort==='top'?'&t=week':'')+(state.after?`&after=${state.after}`:'');
+              const r=await nfetch(url);
+              if(!r.ok)throw new Error('HTTP '+r.status);
+              const j=await r.json();
+              const posts=j.data.children.map(c=>c.data);
+              state.after=j.data.after;
+              let added=0;
+              for(const p of posts){
+                if(state.seen.has(p.id))continue;state.seen.add(p.id);
+                if(p.over_18&&!state.nsfw)continue;
+                const it=parsePost(p);if(!it)continue;
+                items.push(it);addSlide(it,items.length-1);added++;
+              }
+              setMsg(items.length?'':'ویدیویی پیدا نشد');
+              if(!added&&state.after){state.loading=false;return loadMore()}
+            }catch(e){
+              setMsg('خطا در دریافت: '+e.message+'\n(ممکن است ردیت محدودیت CORS یا نرخ درخواست اعمال کرده باشد؛ چند لحظه بعد دوباره امتحان کنید.)');
+            }
+            state.loading=false;
+          }
+          function parsePost(p){
+            const base={id:p.id,title:p.title,sub:p.subreddit_name_prefixed,permalink:'https://www.reddit.com'+p.permalink,author:p.author};
+            const rv=p.media?.reddit_video||p.secure_media?.reddit_video;
+            if(rv){
+              const root=rv.fallback_url.split('/DASH')[0];
+              return {...base,type:'reddit',root,fallback:rv.fallback_url,hls:rv.hls_url};
+            }
+            const u=p.url_overridden_by_dest||p.url||'';
+            const m=u.match(/redgifs\.com\/(?:watch|ifr)\/([a-zA-Z0-9]+)/i);
+            if(m)return {...base,type:'redgifs',gid:m[1].toLowerCase()};
+            if(/\.(mp4|webm)(\?|$)/i.test(u))return {...base,type:'direct',src:u};
+            if(/\.gifv(\?|$)/i.test(u))return {...base,type:'direct',src:u.replace(/\.gifv/i,'.mp4')};
+            const pv=p.preview?.reddit_video_preview;
+            if(pv)return {...base,type:'direct',src:pv.fallback_url};
+            return null;
+          }
+
+          /* ---------- RedGifs ---------- */
+          async function rgAuth(){
+            if(rgToken&&Date.now()-rgTokenAt<20*60e3)return rgToken;
+            const r=await nfetch('https://api.redgifs.com/v2/auth/temporary');
+            if(!r.ok)throw new Error('redgifs auth');
+            rgToken=(await r.json()).token;rgTokenAt=Date.now();return rgToken;
+          }
+          async function rgResolve(it){
+            if(it.resolved)return;
+            const t=await rgAuth();
+            const r=await nfetch('https://api.redgifs.com/v2/gifs/'+it.gid,{headers:{Authorization:'Bearer '+t}});
+            if(!r.ok)throw new Error('redgifs '+r.status);
+            const g=(await r.json()).gif;
+            it.rg={hd:g.urls.hd,sd:g.urls.sd};it.hasAudio=g.hasAudio;it.resolved=true;
+          }
+
+          /* ---------- Slides ---------- */
+          function addSlide(it,i){
+            const s=document.createElement('section');s.className='slide';s.dataset.i=i;
+            s.innerHTML=`<div class="spin"></div><video playsinline loop preload="none" muted></video>
+             <div class="tap">▶</div>
+             <div class="info"><b></b><span></span></div>
+             <div class="side">
+               <button class="btn" data-a="mute">🔇</button>
+               <button class="btn" data-a="bm">🔖</button>
+               <button class="btn" data-a="dl">⬇</button>
+               <button class="btn" data-a="open">↗</button>
+             </div>`;
+            s.querySelector('.info b').textContent=it.title;
+            s.querySelector('.info span').textContent=`${it.sub} · u/${it.author}`;
+            feed.appendChild(s);io.observe(s);
+            refreshBm(s,it);
+          }
+          function refreshBm(s,it){s.querySelector('[data-a=bm]').classList.toggle('on',state.bms.some(b=>b.id===it.id))}
+
+          function pickUrl(it){
+            const q=state.quality;
+            if(it.type==='reddit'){
+              if(q==='auto')return it.fallback;
+              return `${it.root}/DASH_${q}.mp4`;
+            }
+            if(it.type==='redgifs'){return q==='auto'||q==='720'?it.rg.hd:it.rg.sd}
+            return it.src;
+          }
+          async function ensureSrc(s,it){
+            const v=s.querySelector('video');
+            if(v.dataset.ready)return v;
+            try{
+              if(it.type==='redgifs')await rgResolve(it);
+              v.src=pickUrl(it);
+              if(it.type==='reddit'){
+                v.onerror=()=>{if(v.src!==it.fallback&&!v.dataset.fb){v.dataset.fb=1;v.src=it.fallback}};
+                const a=document.createElement('audio');a.preload='none';a.loop=true;
+                a.src=it.root+'/DASH_AUDIO_128.mp4';
+                a.onerror=()=>{if(!a.dataset.fb){a.dataset.fb=1;a.src=it.root+'/DASH_audio.mp4'}else{a.remove();v._a=null}};
+                v._a=a;s.appendChild(a);
+              }
+              v.dataset.ready=1;
+              v.addEventListener('loadeddata',()=>s.classList.add('ready'),{once:true});
+              v.addEventListener('playing',()=>s.classList.add('ready'));
+              v.addEventListener('seeked',()=>{if(v._a)v._a.currentTime=v.currentTime});
+              v.addEventListener('pause',()=>v._a&&v._a.pause());
+              v.addEventListener('play',()=>{if(v._a&&!state.muted){v._a.currentTime=v.currentTime;v._a.play().catch(()=>{})}});
+              v.addEventListener('error',()=>{s.classList.add('ready')});
+            }catch(e){s.classList.add('ready');s.querySelector('.info span').textContent='خطا: '+e.message}
+            return v;
+          }
+          function applyMute(v){
+            const it=v.closest('.slide');
+            v.muted=state.muted||!!v._a;           // برای ردیت صدا از المان audio جدا می‌آید
+            if(v._a){v._a.muted=state.muted;if(!state.muted&&!v.paused){v._a.currentTime=v.currentTime;v._a.play().catch(()=>{})}else v._a.pause()}
+            document.querySelectorAll('[data-a=mute]').forEach(b=>b.textContent=state.muted?'🔇':'🔊');
+          }
+
+          const io=new IntersectionObserver(es=>{
+            for(const e of es){
+              const s=e.target,i=+s.dataset.i,it=items[i];
+              if(e.isIntersecting&&e.intersectionRatio>0.6){
+                active=i;
+                ensureSrc(s,it).then(v=>{
+                  if(active!==i)return;
+                  applyMute(v);v.play().catch(()=>{});
+                });
+                // پیش‌بارگذاری بعدی
+                const n=feed.children[i+1];if(n)ensureSrc(n,items[i+1]);
+                if(i>=items.length-5&&state.after)loadMore();
+              }else{
+                const v=s.querySelector('video');v.pause();if(v._a)v._a.pause();
+                // آزادسازی حافظه برای اسلایدهای دور
+                if(Math.abs(i-active)>3&&v.dataset.ready){v.removeAttribute('src');v.load();if(v._a){v._a.remove();v._a=null}delete v.dataset.ready;delete v.dataset.fb;s.classList.remove('ready')}
+              }
+            }
+          },{root:feed,threshold:[0,.6]});
+
+          /* ---------- Actions ---------- */
+          feed.addEventListener('click',async e=>{
+            const s=e.target.closest('.slide');if(!s)return;
+            const it=items[+s.dataset.i],v=s.querySelector('video');
+            const a=e.target.closest('[data-a]')?.dataset.a;
+            if(!a){ // تپ روی ویدیو: پخش/توقف
+              if(v.paused)v.play();else v.pause();
+              const t=s.querySelector('.tap');t.textContent=v.paused?'⏸':'▶';t.style.right=t.style.left='auto';
+              t.classList.add('show');setTimeout(()=>t.classList.remove('show'),400);
+              return;
+            }
+            if(a==='mute'){state.muted=!state.muted;applyMute(v)}
+            if(a==='bm'){
+              const k=state.bms.findIndex(b=>b.id===it.id);
+              if(k>=0)state.bms.splice(k,1);else state.bms.push({id:it.id,title:it.title,permalink:it.permalink});
+              store.set('bms',state.bms);refreshBm(s,it);toast(k>=0?'از بوکمارک حذف شد':'ذخیره شد');
+            }
+            if(a==='open')window.open(it.permalink,'_blank');
+            if(a==='dl')download(it,s);
+          });
+          async function download(it,s){
+            const url=(await ensureSrc(s,it)).src;
+            const name=(it.title||it.id).replace(/[^\w\u0600-\u06FF]+/g,'_').slice(0,50)+'.mp4';
+            toast('در حال دانلود…');
+            if(typeof Native!=='undefined'){Native.download(url,name);toast('دانلود شروع شد (پوشه Movies/ReelsFeed)'+(it.type==='reddit'?' - ردیت: بدون صدا':''));return}
+            try{
+              const r=await fetch(url);if(!r.ok)throw 0;
+              const b=await r.blob();
+              const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=name;
+              document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),5000);
+              toast('دانلود شد'+(it.type==='reddit'?' (بدون صدا؛ ردیت صدا را جدا نگه می‌دارد)':''));
+            }catch{
+              window.open(url,'_blank');toast('دانلود مستقیم ممکن نشد؛ لینک باز شد (نگه‌داشتن → ذخیره)');
+            }
+          }
+
+          /* ---------- UI ---------- */
+          function go(){
+            state.sub=$('#sub').value.trim()||'videos';state.sort=$('#sort').value;
+            store.set('sub',state.sub);store.set('sort',state.sort);
+            loadMore(true);
+          }
+          $('#go').onclick=go;
+          $('#sub').addEventListener('keydown',e=>{if(e.key==='Enter'){e.target.blur();go()}});
+          let st;$('#sub').addEventListener('input',e=>{
+            clearTimeout(st);const q=e.target.value.trim();
+            if(q.length<2||q.includes('+'))return;
+            st=setTimeout(async()=>{
+              try{const r=await nfetch(`https://www.reddit.com/subreddits/search.json?q=${encodeURIComponent(q)}&limit=8&raw_json=1&include_over_18=${state.nsfw?'on':'off'}`);
+                const j=await r.json();$('#subs').innerHTML=j.data.children.map(c=>`<option value="${c.data.display_name}">`).join('')}catch{}
+            },350);
+          });
+          $('#bPanel').onclick=()=>{renderBms();$('#panel').classList.add('open')};
+          $('#closeP').onclick=()=>$('#panel').classList.remove('open');
+          $('#nsfw').onchange=e=>{
+            if(e.target.checked&&!confirm('تأیید می‌کنید که ۱۸ سال یا بیشتر دارید؟')){e.target.checked=false;return}
+            state.nsfw=e.target.checked;store.set('nsfw',state.nsfw);
+          };
+          $('#quality').onchange=e=>{state.quality=e.target.value;store.set('quality',state.quality);toast('از ویدیوی بعدی اعمال می‌شود')};
+          function renderBms(){
+            const box=$('#bms');box.innerHTML='';
+            if(!state.bms.length){box.textContent='خالی است';return}
+            state.bms.forEach((b,i)=>{
+              const r=document.createElement('div');r.className='row';
+              const sp=document.createElement('span');sp.textContent=b.title;
+              const o=document.createElement('button');o.textContent='باز کردن';o.onclick=()=>window.open(b.permalink,'_blank');
+              const d=document.createElement('button');d.textContent='حذف';d.onclick=()=>{state.bms.splice(i,1);store.set('bms',state.bms);renderBms()};
+              r.append(sp,o,d);box.appendChild(r);
+            });
+          }
+          // مخفی/نمایان شدن نوار بالا هنگام اسکرول
+          let lastY=0;feed.addEventListener('scroll',()=>{const y=feed.scrollTop;$('#bar').classList.toggle('hide',y>lastY&&y>50);lastY=y},{passive:true});
+          // کلیدهای کیبورد
+          addEventListener('keydown',e=>{
+            if(e.target.tagName==='INPUT')return;
+            if(e.key==='ArrowDown')feed.scrollBy({top:innerHeight,behavior:'smooth'});
+            if(e.key==='ArrowUp')feed.scrollBy({top:-innerHeight,behavior:'smooth'});
+            if(e.key==='m'){state.muted=!state.muted;const v=feed.children[active]?.querySelector('video');v&&applyMute(v)}
+            if(e.key===' '){e.preventDefault();const v=feed.children[active]?.querySelector('video');v&&(v.paused?v.play():v.pause())}
+          });
+
+          $('#sub').value=state.sub;$('#sort').value=state.sort;$('#nsfw').checked=state.nsfw;$('#quality').value=state.quality;
+          loadMore(true);
+          </script>
+          </body>
+          </html>
+          EOF_6_END
+          cat > app/src/main/res/drawable/ic_launcher.xml <<'EOF_7_END'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="100"
+              android:viewportHeight="100">
+              <path
+                  android:fillColor="#FF4500"
+                  android:pathData="M22,0h56a22,22 0 0 1 22,22v56a22,22 0 0 1 -22,22h-56a22,22 0 0 1 -22,-22v-56a22,22 0 0 1 22,-22z" />
+              <path
+                  android:fillColor="#FFFFFF"
+                  android:pathData="M38,28v44l36,-22z" />
+          </vector>
+          EOF_7_END
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ReelsFeed-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
