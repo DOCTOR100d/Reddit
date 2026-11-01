@@ -102,23 +102,32 @@ jobs:
           import android.net.Uri;
           import android.os.Bundle;
           import android.os.Environment;
+          import android.os.Handler;
+          import android.os.Looper;
           import android.util.Base64;
           import android.view.View;
           import android.view.WindowManager;
           import android.webkit.JavascriptInterface;
           import android.webkit.WebChromeClient;
           import android.webkit.WebResourceRequest;
+          import android.webkit.WebResourceResponse;
           import android.webkit.WebSettings;
           import android.webkit.WebView;
           import android.webkit.WebViewClient;
+          import android.widget.FrameLayout;
 
+          import org.json.JSONArray;
           import org.json.JSONObject;
 
           import java.io.ByteArrayOutputStream;
           import java.io.InputStream;
           import java.net.HttpURLConnection;
           import java.net.URL;
+          import java.nio.charset.StandardCharsets;
+          import java.util.ArrayDeque;
+          import java.util.HashMap;
           import java.util.Iterator;
+          import java.util.Map;
 
           public class MainActivity extends Activity {
 
@@ -126,15 +135,31 @@ jobs:
                       + "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
 
               private WebView web;
+              private WebView fetcher;                     // WebView مخفی برای درخواست‌های ردیت
+              private final ArrayDeque<String[]> queue = new ArrayDeque<>();
+              private String[] cur = null;                 // {id, url, headersJson}
+              private int curStatus = 0;
+              private final Handler handler = new Handler(Looper.getMainLooper());
+              private Runnable timeout;
 
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
                   getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
+                  FrameLayout root = new FrameLayout(this);
+                  root.setBackgroundColor(Color.BLACK);
+
                   web = new WebView(this);
                   web.setBackgroundColor(Color.BLACK);
-                  setContentView(web);
+                  root.addView(web, new FrameLayout.LayoutParams(
+                          FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+
+                  fetcher = new WebView(this);
+                  fetcher.setAlpha(0f);
+                  root.addView(fetcher, new FrameLayout.LayoutParams(1, 1));
+
+                  setContentView(root);
 
                   WebSettings s = web.getSettings();
                   s.setJavaScriptEnabled(true);
@@ -156,7 +181,77 @@ jobs:
                       }
                   });
                   web.addJavascriptInterface(new Bridge(), "Native");
+
+                  setupFetcher();
                   web.loadUrl("file:///android_asset/index.html");
+              }
+
+              /** WebView مخفی: درخواست ردیت را با موتور Chromium می‌فرستد (مثل مرورگر) */
+              private void setupFetcher() {
+                  WebSettings fs = fetcher.getSettings();
+                  fs.setJavaScriptEnabled(true);
+                  fs.setDomStorageEnabled(true);
+                  fs.setUserAgentString(UA);
+                  fetcher.setWebViewClient(new WebViewClient() {
+                      @Override
+                      public void onReceivedHttpError(WebView v, WebResourceRequest r, WebResourceResponse e) {
+                          if (r.isForMainFrame()) curStatus = e.getStatusCode();
+                      }
+
+                      @Override
+                      public void onReceivedError(WebView v, WebResourceRequest r,
+                                                  android.webkit.WebResourceError e) {
+                          if (r.isForMainFrame()) finishFetch(0, "");
+                      }
+
+                      @Override
+                      public void onPageFinished(WebView v, String url) {
+                          if (cur == null || "about:blank".equals(url)) return;
+                          final String id = cur[0];
+                          v.evaluateJavascript("document.body?document.body.innerText:''", val -> {
+                              if (cur == null || !cur[0].equals(id)) return;
+                              String body = "";
+                              try {
+                                  body = new JSONArray("[" + val + "]").getString(0);
+                              } catch (Exception ignored) { }
+                              int st = curStatus != 0 ? curStatus
+                                      : (body.startsWith("{") || body.startsWith("[") ? 200 : 0);
+                              finishFetch(st, body);
+                          });
+                      }
+                  });
+              }
+
+              private void pumpFetch() {
+                  if (cur != null || queue.isEmpty()) return;
+                  cur = queue.poll();
+                  curStatus = 0;
+                  Map<String, String> hdr = new HashMap<>();
+                  try {
+                      JSONObject o = new JSONObject(cur[2]);
+                      Iterator<String> it = o.keys();
+                      while (it.hasNext()) {
+                          String k = it.next();
+                          hdr.put(k, o.getString(k));
+                      }
+                  } catch (Exception ignored) { }
+                  fetcher.loadUrl(cur[1], hdr);
+                  timeout = () -> finishFetch(0, "");
+                  handler.postDelayed(timeout, 25000);
+              }
+
+              private void finishFetch(int status, String body) {
+                  if (cur == null) return;
+                  handler.removeCallbacks(timeout);
+                  String id = cur[0];
+                  cur = null;
+                  deliver(id, status, body);
+                  pumpFetch();
+              }
+
+              private void deliver(String id, int status, String body) {
+                  String b64 = Base64.encodeToString(body.getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP);
+                  web.evaluateJavascript("window.__nativeResp('" + id + "'," + status + ",'" + b64 + "')", null);
               }
 
               @Override
@@ -188,6 +283,7 @@ jobs:
               @Override
               protected void onDestroy() {
                   web.destroy();
+                  fetcher.destroy();
                   super.onDestroy();
               }
 
@@ -196,9 +292,16 @@ jobs:
 
                   @JavascriptInterface
                   public void fetch(final String id, final String url, final String headersJson) {
+                      if (url.contains("reddit.com")) {
+                          runOnUiThread(() -> {
+                              queue.add(new String[]{id, url, headersJson});
+                              pumpFetch();
+                          });
+                          return;
+                      }
                       new Thread(() -> {
                           int status = 0;
-                          String b64 = "";
+                          String body = "";
                           try {
                               HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
                               c.setConnectTimeout(15000);
@@ -219,14 +322,13 @@ jobs:
                                   while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
                                   in.close();
                               }
-                              b64 = Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP);
+                              body = new String(out.toByteArray(), StandardCharsets.UTF_8);
                           } catch (Exception e) {
                               status = 0;
                           }
                           final int st = status;
-                          final String body = b64;
-                          runOnUiThread(() -> web.evaluateJavascript(
-                                  "window.__nativeResp('" + id + "'," + st + ",'" + body + "')", null));
+                          final String b = body;
+                          runOnUiThread(() -> deliver(id, st, b));
                       }).start();
                   }
 
@@ -343,9 +445,13 @@ jobs:
             setMsg('در حال بارگذاری…');
             try{
               const sub=state.sub.trim().replace(/^\/?r\//i,'')||'videos';
-              let url=`https://www.reddit.com/r/${encodeURIComponent(sub).replace(/%2B/g,'+')}/${state.sort}.json?limit=50&raw_json=1`+(state.sort==='top'?'&t=week':'')+(state.after?`&after=${state.after}`:'');
-              const r=await nfetch(url);
-              if(!r.ok)throw new Error('HTTP '+r.status);
+              const q='limit=50&raw_json=1'+(state.sort==='top'?'&t=week':'')+(state.after?`&after=${state.after}`:'');
+              const path=`/r/${encodeURIComponent(sub).replace(/%2B/g,'+')}/${state.sort}`;
+              let r=null,st=0;
+              for(const [b,ext] of [['https://www.reddit.com','.json'],['https://old.reddit.com','.json'],['https://api.reddit.com','']]){
+                try{r=await nfetch(b+path+ext+'?'+q,{headers:{'Accept':'application/json'}});st=r.status;if(r.ok)break}catch{st=0}
+              }
+              if(!r||!r.ok)throw new Error('HTTP '+st+' (همه آدرس‌های ردیت رد شدند؛ VPN را روشن/عوض کنید)');
               const j=await r.json();
               const posts=j.data.children.map(c=>c.data);
               state.after=j.data.after;
